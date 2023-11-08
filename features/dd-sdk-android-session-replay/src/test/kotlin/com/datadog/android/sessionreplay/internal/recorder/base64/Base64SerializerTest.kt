@@ -77,6 +77,8 @@ internal class Base64SerializerTest {
 
     private lateinit var fakeBase64String: String
 
+    private lateinit var fakeHashString: String
+
     private lateinit var fakeByteArray: ByteArray
 
     @Mock
@@ -84,6 +86,9 @@ internal class Base64SerializerTest {
 
     @Mock
     lateinit var mockBase64LRUCache: Base64LRUCache
+
+    @Mock
+    lateinit var mockHashLRUCache: Base64LRUCache
 
     @Mock
     lateinit var mockDisplayMetrics: DisplayMetrics
@@ -121,6 +126,7 @@ internal class Base64SerializerTest {
     @BeforeEach
     fun setup(forge: Forge) {
         fakeBase64String = forge.aString()
+        fakeHashString = forge.aString()
         fakeByteArray = forge.aString().toByteArray()
 
         fakeImageWireframe.base64 = ""
@@ -220,6 +226,7 @@ internal class Base64SerializerTest {
         // Given
         val fakeBase64String = forge.anAsciiString()
         whenever(mockBase64LRUCache.get(mockDrawable)).thenReturn(fakeBase64String)
+        whenever(mockHashLRUCache.get(mockDrawable)).thenReturn(fakeHashString)
 
         whenever(
             mockDrawableUtils.createBitmapOfApproxSizeFromDrawable(
@@ -272,12 +279,53 @@ internal class Base64SerializerTest {
     @Test
     fun `M log error W handleBitmap() { base64Lru does not subclass ComponentCallbacks2 }`() {
         // Given
-        val fakeBase64CacheInstance = FakeBase64LruCache()
+        val fakeBase64CacheInstance = FakeNonComponentsCallbackCache()
         testedBase64Serializer = Base64Serializer.Builder(
             logger = mockLogger,
             threadPoolExecutor = mockExecutorService,
             bitmapPool = mockBitmapPool,
             base64LRUCache = fakeBase64CacheInstance,
+            hashLRUCache = mockHashLRUCache,
+            drawableUtils = mockDrawableUtils,
+            base64Utils = mockBase64Utils,
+            webPImageCompression = mockWebPImageCompression
+        ).build()
+
+        // When
+        testedBase64Serializer.handleBitmap(
+            applicationContext = mockApplicationContext,
+            displayMetrics = mockDisplayMetrics,
+            drawable = mockDrawable,
+            drawableWidth = mockDrawable.intrinsicWidth,
+            drawableHeight = mockDrawable.intrinsicHeight,
+            imageWireframe = fakeImageWireframe
+        )
+
+        // Then
+        val captor = argumentCaptor<() -> String>()
+        verify(mockLogger).log(
+            level = any(),
+            target = any(),
+            captor.capture(),
+            anyOrNull(),
+            anyOrNull(),
+            anyOrNull()
+        )
+        assertThat(captor.firstValue.invoke()).isEqualTo(
+            DOES_NOT_IMPLEMENT_COMPONENTCALLBACKS
+        )
+    }
+
+    @Test
+    fun `M log error W handleBitmap() { hashLRUCache does not subclass ComponentCallbacks2 }`() {
+        // Given
+        val fakeHashLRUCache = FakeNonComponentsCallbackCache()
+        testedBase64Serializer = Base64Serializer.Builder(
+            logger = mockLogger,
+            threadPoolExecutor = mockExecutorService,
+            bitmapPool = mockBitmapPool,
+            base64LRUCache = mockBase64LRUCache,
+            hashLRUCache = fakeHashLRUCache,
             drawableUtils = mockDrawableUtils,
             base64Utils = mockBase64Utils,
             webPImageCompression = mockWebPImageCompression
@@ -677,6 +725,7 @@ internal class Base64SerializerTest {
             threadPoolExecutor = mockExecutorService,
             bitmapPool = mockBitmapPool,
             base64LRUCache = mockBase64LRUCache,
+            hashLRUCache = mockHashLRUCache,
             drawableUtils = mockDrawableUtils,
             base64Utils = mockBase64Utils,
             webPImageCompression = mockWebPImageCompression
@@ -686,7 +735,7 @@ internal class Base64SerializerTest {
 
     // this is in order to test having a class that implements
     // Cache, but does NOT implement ComponentCallbacks2
-    private class FakeBase64LruCache : Cache<Drawable, String> {
+    private class FakeNonComponentsCallbackCache : Cache<Drawable, String> {
         override fun put(value: String) {
             super.put(value)
         }

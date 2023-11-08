@@ -35,10 +35,12 @@ internal class Base64Serializer private constructor(
     private val base64Utils: Base64Utils,
     private val webPImageCompression: ImageCompression,
     private val base64LRUCache: Cache<Drawable, String>?,
+    private val hashLRUCache: Cache<Drawable, String>?,
     private val bitmapPool: BitmapPool?,
     private val logger: InternalLogger
 ) {
-    private var isCacheRegisteredForCallbacks: Boolean = false
+    private var isBase64CacheRegisteredForCallbacks: Boolean = false
+    private var isHashCacheRegisteredForCallbacks: Boolean = false
     private var isBitmapPoolRegisteredForCallbacks: Boolean = false
 
     // region internal
@@ -93,17 +95,49 @@ internal class Base64Serializer private constructor(
         imageWireframe: MobileSegment.Wireframe.ImageWireframe,
         base64SerializerCallback: Base64SerializerCallback?
     ) {
-        val base64String = convertBmpToBase64(drawable, bitmap, shouldCacheBitmap)
-        finalizeRecordedDataItem(base64String, imageWireframe, base64SerializerCallback)
+        val byteArray = compressBitmap(bitmap)
+        val base64String = convertBmpToBase64(byteArray, drawable, bitmap, shouldCacheBitmap)
+        val hash = calculateHash(drawable, byteArray)
+        finalizeRecordedDataItem(base64String, hash, imageWireframe, base64SerializerCallback)
+    }
+
+    private fun calculateHash(
+        drawable: Drawable,
+        byteArray: ByteArray
+    ): String? {
+        val md5Generator = MD5HashGenerator(logger)
+        val hashValue = md5Generator.generate(byteArray)
+
+        if (hashValue != null) {
+            hashLRUCache?.put(drawable, hashValue)
+        }
+
+        return hashValue
     }
 
     @MainThread
-    private fun registerCacheForCallbacks(applicationContext: Context) {
-        if (isCacheRegisteredForCallbacks) return
+    private fun registerBase64LruCacheForCallbacks(applicationContext: Context) {
+        if (isBase64CacheRegisteredForCallbacks) return
 
         if (base64LRUCache is ComponentCallbacks2) {
             applicationContext.registerComponentCallbacks(base64LRUCache)
-            isCacheRegisteredForCallbacks = true
+            isBase64CacheRegisteredForCallbacks = true
+        } else {
+            logger.log(
+                level = InternalLogger.Level.WARN,
+                target = InternalLogger.Target.MAINTAINER,
+                messageBuilder = { DOES_NOT_IMPLEMENT_COMPONENTCALLBACKS }
+            )
+        }
+    }
+
+    @MainThread
+    private fun registerHashLruCacheForCallbacks(applicationContext: Context) {
+        if (isHashCacheRegisteredForCallbacks) return
+
+        if (hashLRUCache is ComponentCallbacks2) {
+            applicationContext.registerComponentCallbacks(hashLRUCache)
+            isHashCacheRegisteredForCallbacks = true
         } else {
             // Temporarily use UNBOUND logger
             // TODO: REPLAY-1364 Add logs here once the sdkLogger is added
@@ -123,13 +157,18 @@ internal class Base64Serializer private constructor(
         isBitmapPoolRegisteredForCallbacks = true
     }
 
+    private fun compressBitmap(bitmap: Bitmap): ByteArray {
+        return webPImageCompression.compressBitmap(bitmap)
+    }
+
     @WorkerThread
-    private fun convertBmpToBase64(drawable: Drawable, bitmap: Bitmap, shouldCacheBitmap: Boolean): String {
-        val base64Result: String
-
-        val byteArray = webPImageCompression.compressBitmap(bitmap)
-
-        base64Result = base64Utils.serializeToBase64String(byteArray)
+    private fun convertBmpToBase64(
+        byteArray: ByteArray,
+        drawable: Drawable,
+        bitmap: Bitmap,
+        shouldCacheBitmap: Boolean
+    ): String {
+        val base64Result = base64Utils.serializeToBase64String(byteArray)
 
         if (base64Result.isNotEmpty()) {
             // if we got a base64 string then cache it
@@ -203,10 +242,15 @@ internal class Base64Serializer private constructor(
         imageWireframe: MobileSegment.Wireframe.ImageWireframe,
         base64SerializerCallback: Base64SerializerCallback?
     ): String? {
-        return base64LRUCache?.get(drawable)?.let { base64String ->
-            finalizeRecordedDataItem(base64String, imageWireframe, base64SerializerCallback)
-            base64String
+        val base64String = base64LRUCache?.get(drawable)
+        val hash = hashLRUCache?.get(drawable)
+
+        if (base64String != null && hash != null) {
+            finalizeRecordedDataItem(base64String, hash, imageWireframe, base64SerializerCallback)
+            return base64String
         }
+
+        return null
     }
 
     private fun serializeBitmapAsynchronously(
@@ -230,9 +274,14 @@ internal class Base64Serializer private constructor(
 
     private fun finalizeRecordedDataItem(
         base64String: String,
+        hash: String?,
         wireframe: MobileSegment.Wireframe.ImageWireframe,
         base64SerializerCallback: Base64SerializerCallback?
     ) {
+        if (hash != null) {
+            wireframe.resourceId = hash
+        }
+
         if (base64String.isNotEmpty()) {
             wireframe.base64 = base64String
             wireframe.isEmpty = false
@@ -263,7 +312,8 @@ internal class Base64Serializer private constructor(
 
     @MainThread
     private fun registerCallbacks(applicationContext: Context) {
-        registerCacheForCallbacks(applicationContext)
+        registerBase64LruCacheForCallbacks(applicationContext)
+        registerHashLruCacheForCallbacks(applicationContext)
         registerBitmapPoolForCallbacks(applicationContext)
     }
 
@@ -276,6 +326,7 @@ internal class Base64Serializer private constructor(
         private var threadPoolExecutor: ExecutorService = THREADPOOL_EXECUTOR,
         private var bitmapPool: BitmapPool? = null,
         private var base64LRUCache: Cache<Drawable, String>? = null,
+        private var hashLRUCache: Cache<Drawable, String>? = null,
         private var drawableUtils: DrawableUtils = DrawableUtils(bitmapPool = bitmapPool),
         private var base64Utils: Base64Utils = Base64Utils(),
         private var webPImageCompression: ImageCompression = WebPImageCompression()
@@ -289,7 +340,8 @@ internal class Base64Serializer private constructor(
                 base64LRUCache = base64LRUCache,
                 drawableUtils = drawableUtils,
                 base64Utils = base64Utils,
-                webPImageCompression = webPImageCompression
+                webPImageCompression = webPImageCompression,
+                hashLRUCache = hashLRUCache
             )
 
         private companion object {
