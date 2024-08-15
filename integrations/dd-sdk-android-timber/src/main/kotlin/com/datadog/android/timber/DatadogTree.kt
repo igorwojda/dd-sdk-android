@@ -48,6 +48,6 @@ class DatadogTree(
         message: String,
         t: Throwable?
     ) {
-        logger.log(priority, message, t)
+        logger.log(priority, "$tag + $message", t)
     }
 }
